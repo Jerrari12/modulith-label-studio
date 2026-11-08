@@ -154,6 +154,14 @@ html.embed #side { position: static; max-height: none; overflow: visible; }
 .stage-h:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 4px; }
 .stage-h .hint { font-family: var(--sans); font-weight: 400; font-size: 14px; color: var(--muted); }
 .stage-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 16px 0; }
+/* Not sure, one tap from the question (2026-11-08) */
+.notsure { margin: -2px 0 10px; font-size: 13px; color: var(--muted); }
+.notsure .linkish { font-size: 13px; }
+/* the phone's one-line stage (2026-11-08); the strip below it opens on Jump to… */
+.stage-line { display: none; }
+/* READY TO LABEL (2026-11-08): the foot before Details, once every required answer is in */
+.stage-foot .foot-ready { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; flex: 1 1 280px; justify-content: flex-end; }
+.stage-foot .foot-ready .ready-text { font-size: 13px; line-height: 1.4; color: var(--ok); }
 .note.unlock { color: var(--ink); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
 .welcome { color: var(--ink); line-height: 1.5; margin: 0; }
 
@@ -371,6 +379,14 @@ details.lw summary { cursor: pointer; }
 
 @media (max-width: 760px) {
   header.top, .layout { padding-left: 16px; padding-right: 16px; }
+  /* a compact header (the design consult's step 2, 2026-11-08): the tagline goes, the padding halves, so the first choice is
+     sooner; Feedback stays, small */
+  header.top { padding-top: 8px; padding-bottom: 8px; gap: 10px; }
+  .brand-sub { display: none; }
+  .stage-line { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; margin: 0 0 8px; font-size: 13px; }
+  .stage-line .sl-step { font-family: var(--mono); font-weight: 600; color: var(--accent-ink); white-space: nowrap; }
+  .stage-line .sl-crumbs { flex: 1 1 120px; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stages:not(.open) { display: none; }
   #side { position: static; max-height: none; }
   /* the strip: one row that scrolls sideways, the current stage kept in view (ui.js scrolls it there) */
   .stages { overflow-x: auto; scrollbar-width: none; }

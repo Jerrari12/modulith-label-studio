@@ -130,6 +130,21 @@ export function primaryText({ mode, n, held = 0, editing = false, retry = false 
   if (mode === 'studio') return retry ? `Try again: add ${partLabels(total)}` : total ? `Add ${partLabels(total)}` : 'Add part labels';
   return total ? `Add ${parts(total)} to the list` : 'Add to the list';
 }
+// READY TO LABEL (2026-11-08, docs/FLOW-REVIEW-2026-11-08.md, the first of its three changes, Joey's pick): on its own page
+// the primary MAKES the labels once a batch is ready, putting the batch on the list on the way, and "Add N to the list"
+// steps aside as the way to keep collecting. The 2026-10-14 table had them the other way round ("the list is the product"),
+// and one label took two confirmations: Add, then Make labels, which stayed grey until the add (the hands-on, 6 taps).
+// total: the parts the press would label (the ready batch, the pending ones and the list shown)
+export const makeLabelsText = (total) => total ? `Make ${labels(total)}` : 'Make labels';
+// the stage foot once every required answer is in, instead of "Next: Details": what is ready, where the action is, and that
+// Details is optional (its button beside this). spec: the ready parts in words ("M3 × 8, M3 × 20"), n: how many
+export function readyFootText(mode, spec, n = 1) {
+  const it = n === 1 ? 'it' : 'them', label = n === 1 ? 'the label' : 'the labels';
+  const what = spec ? `Ready: ${spec}. ` : 'Ready. ';
+  if (mode === 'standalone') return `${what}Make ${label} with the button below, or add ${it} to the list and keep picking.`;
+  if (mode === 'planner') return `${what}Add ${it} to the planner with the button below.`;
+  return `${what}Add ${n === 1 ? 'the part label' : 'the part labels'} with the button below.`;
+}
 // the wording Joey and Astra chose (2026-10-14): "Pick more first" promises nothing about where it goes and keeps "Add" on
 // the one orange button; the parts it keeps are "pending" (not held, not waiting)
 export const HOLD_TEXT = 'Pick more first';

@@ -19,7 +19,7 @@ import { isPinned, togglePin } from './labelpins.js';
 import { labelItem } from './labelitem.js';
 import { PLAN, planKey, planEntries } from './plan.js';
 import { stagesFor, stageOfEntry, nextStage, prevStage, stageBeforeBatch, shouldAdvance, readiness, primaryText,
-  HOLD_TEXT, heldText, addAllText, colourHint } from './flow.js';
+  HOLD_TEXT, heldText, addAllText, colourHint, makeLabelsText, readyFootText } from './flow.js';
 import { readFind, readerContext, candKey, an } from './findparse.js';
 import { applyFind, rankFind, freshDraft, chooseDriveOn, headStdOf as headStdIn } from './find.js';
 // a field value's full meaning for the label-words editor: a type id reads as its name ('tooth-internal' -> 'Internal
@@ -226,6 +226,10 @@ const state = {
   family: 'screw', template: null, records: [],
   sel: [],               // batch values of the family's varying field (numbers; listed or not is read from the menu)
   explicit: new Set(),   // paths the user set to Unknown on purpose (so a fresh record does not show Unknown as picked)
+  given: new Set(),      // paths the user ANSWERED (a tap, a typed value, Find): the strip claims only these as answered; a value
+                         // the data filled in (the coarse pitch, the head's drive) stays in the record with its status word but is
+                         // not shown as the user's answer (docs/FLOW-REVIEW-2026-11-08.md, the design consult's step 1)
+  stripOpen: false,      // a phone: the full stage strip is open under its one-line "Step 2 of 5" (Jump to…)
   section: 'head',       // the section being edited: its token in the summary strip is marked
   customOpen: null,      // path whose "your own value" box is open
   editing: null,         // record id being edited, or null (batch mode)
@@ -256,7 +260,8 @@ function save() {
   // held: parts pending for the next add survive a reload or the host closing (the stress test: closed with parts
   // pending, they sat on the list unmarked after a reload, and nothing said so). They are kept per page (HELD_STORE): the
   // three pages share the list, and parts pending for the planner must not go out on the Label Studio sheet's next Add
-  try { localStorage.setItem(STORE, JSON.stringify({ family: state.family, template: state.saved ? state.saved.template : state.template, records: state.records, label_style: state.labelStyle, chosen: state.chosen }));
+  try { localStorage.setItem(STORE, JSON.stringify({ family: state.family, template: state.saved ? state.saved.template : state.template, records: state.records, label_style: state.labelStyle, chosen: state.chosen,
+      given: [...(state.saved ? state.saved.given : state.given)], explicit: [...(state.saved ? state.saved.explicit : state.explicit)] }));
     // with the build they were staged for (LABELS-INTEGRATION.md: pending parts belong to their build)
     localStorage.setItem(HELD_STORE, JSON.stringify({ build: heldBuild(), held: state.held })); storageWarned = false; }
   catch {
@@ -321,7 +326,12 @@ function restore() {
     if ('label_style' in s) state.labelStyle = cleanStyle(s.label_style) || null;
     // a returning visitor's family is restored: the flow then starts past the Family stage
     // (a list saved before the flow refine has no chosen key: its template was a choice, so it counts)
-    if (s.template && FAMILIES.has(s.template.family) && s.template.id === 'template') { state.template = upgradeRecord(s.template); state.family = s.template.family; state.chosen = 'chosen' in s ? !!s.chosen : true; }
+    if (s.template && FAMILIES.has(s.template.family) && s.template.id === 'template') {
+      state.template = upgradeRecord(s.template); state.family = s.template.family; state.chosen = 'chosen' in s ? !!s.chosen : true;
+      // what the draft's owner answered (2026-11-08); a draft saved before this has no list, so its values read as the data's
+      if (Array.isArray(s.given)) state.given = new Set(s.given.filter((p) => typeof p === 'string'));
+      if (Array.isArray(s.explicit)) state.explicit = new Set(s.explicit.filter((p) => typeof p === 'string'));
+    }
   } catch { /* ignore */ }
 }
 
@@ -490,11 +500,14 @@ function apply(section, path, input) {
     state.template = P.set(T(), path, input);
     state.section = section;
     if (input.mode === UNKNOWN) state.explicit.add(path); else state.explicit.delete(path);
+    if (input.mode === UNKNOWN) state.given.delete(path); else state.given.add(path);
     state.customOpen = null;
     if (path === 'drive.type') state.offerKept = false;
     userMoved();
     afterChange();
-    if (input.mode === LISTED && !NO_ADVANCE.has(path)) maybeAdvance(section);
+    // an Unknown on purpose is an answer and moves on like a named choice (2026-11-08: it left the newcomer standing on the
+    // Type stage with nothing happening while a named head advanced by itself); a typed custom value stays put, as before
+    if ((input.mode === LISTED || input.mode === UNKNOWN) && !NO_ADVANCE.has(path)) maybeAdvance(section);
   } catch (e) { setStatus(e.message, 'err'); }
 }
 const pick = (section, path, value) => apply(section, path, { mode: LISTED, value });
@@ -616,7 +629,7 @@ const headStdOf = (t) => headStdIn(D, t);
 function chooseDrive(id) {
   try {
     state.template = chooseDriveOn(P, D, T(), id);
-    state.section = 'drive'; state.offerKept = false; state.customOpen = null; state.explicit.delete('drive.type');
+    state.section = 'drive'; state.offerKept = false; state.customOpen = null; state.explicit.delete('drive.type'); state.given.add('drive.type');
     afterChange();
   } catch (e) { setStatus(e.message, 'err'); }
 }
@@ -629,12 +642,12 @@ function switchFamily(id) {
   if (id === state.family) return;
   if (!D || !T()) return;   // the data is not in yet: the tiles are disabled until then, and a click that slips through does nothing (2026-10-13)
   const old = T();
-  drafts[state.family] = { template: old, sel: state.sel, explicit: [...state.explicit] };
+  drafts[state.family] = { template: old, sel: state.sel, explicit: [...state.explicit], given: [...state.given] };
   if (drafts[id]) {
     const d = drafts[id];
     let t = d.template;
     if (old.tags) t = P.setMeta(t, { tags: old.tags });
-    state.template = t; state.family = id; state.sel = d.sel; state.explicit = new Set(d.explicit);
+    state.template = t; state.family = id; state.sel = d.sel; state.explicit = new Set(d.explicit); state.given = new Set(d.given || []);
     state.customOpen = null; state.offerKept = false; state.section = planKey(PLAN[id][0]);
     afterChange();
     return;
@@ -642,7 +655,7 @@ function switchFamily(id) {
   // only the material fields the new family shows, the notes and the collections; a family with one type gets it (set
   // screws: the point is the choice). The steps are js/find.js freshDraft, which Find runs too.
   state.template = freshDraft(P, id, old); state.family = id;
-  state.sel = []; state.explicit.clear(); state.customOpen = null; state.offerKept = false;
+  state.sel = []; state.explicit.clear(); state.given.clear(); state.customOpen = null; state.offerKept = false;
   state.section = planKey(PLAN[id][0]);
   afterChange();
 }
@@ -777,7 +790,7 @@ function suggestionRows(section, path) {
     h('div', { class: 'sugg' }, statusChip(null, { suggested: true }),
       h('span', {}, suggText(s)), h('span', { class: 'tier' }, s.tier),
       s.hint ? h('span', { class: 'muted' }, ` - ${s.hint}`) : null,
-      h('button', { type: 'button', class: 'btn sm', onclick: () => { state.template = P.acceptSuggestion(T(), path, s.value); state.section = section; afterChange(); } }, 'Use')));
+      h('button', { type: 'button', class: 'btn sm', onclick: () => { state.template = P.acceptSuggestion(T(), path, s.value); state.given.add(path); state.section = section; afterChange(); } }, 'Use')));
 }
 function notes(info) {
   const out = [];
@@ -913,7 +926,7 @@ function driveChangePanel() {
       h('b', {}, offer.label), ` pairs this head with ${dname} (pairing from our own tables, ${offer.tier}).`),
     after ? h('div', {}, h('div', { class: 'muted' }, `If you use ${fmtStandard(offer.standard)}, recheck:`), h('ul', {}, checks)) : null,
     h('div', { class: 'row' },
-      h('button', { type: 'button', class: 'btn primary', onclick: () => { state.template = P.acceptOffer(T()); afterChange(); setStatus(`${fmtStandard(offer.standard)} attached. Check the lengths below.`, 'ok'); } },
+      h('button', { type: 'button', class: 'btn primary', onclick: () => { state.template = P.acceptOffer(T()); state.given.add('drive.type'); afterChange(); setStatus(`${fmtStandard(offer.standard)} attached. Check the lengths below.`, 'ok'); } },
         `Use ${fmtStandard(offer.standard)}`),
       h('button', { type: 'button', class: 'btn ghost', onclick: () => { state.offerKept = true; render(); } }, 'Keep as a custom combination'),
       back));
@@ -1421,13 +1434,28 @@ function tokens() {
 // THE STAGE STRIP (2026-10-14, the flow refine §3): one button per stage, its value so far, the current one marked, a stage
 // still owing a required answer reading "choose" - in words, not colour alone. Navigation and progress, never a gate.
 // It replaces the token grid; the tokens still say what each stage holds.
+// a record's own values are its answers (editing one): every stage path it has a value for
+function givenPathsOf(rec) {
+  const out = new Set();
+  for (const e of planEntries(rec.family)) { const p = sectionPath(e.key); const f = p ? getPath(rec, p) : null; if (f && f.status !== UNKNOWN) out.add(p); }
+  return out;
+}
 function stageValues() {
   const out = {};
   if (!state.chosen) return out;
+  const entries = planEntries(state.family);
   for (const tk of tokens()) {
-    if (!tk.v) continue;
     const sid = tk.key === 'family' ? 'family' : stageOfKey(tk.key);
-    (out[sid] = out[sid] || []).push(tk.v);
+    const p = tk.key === 'family' ? null : sectionPath(tk.key);
+    const e = entries.find((x) => x.key === tk.key);
+    const batch = batching() && !!(e && e.multi) && state.sel.length > 0;   // the ticked lengths or sizes: given by the ticking
+    // only what the user gave (the design consult's step 1, 2026-11-08): the family, the ticked batch, a typed name, a path in
+    // `given`, or an Unknown on purpose, which reads "Unknown"; a value the data filled in stays in the record, unclaimed here
+    const given = tk.key === 'family' || batch || tk.k === 'NAME' || (p && (state.given.has(p) || state.explicit.has(p)));
+    if (!given) continue;
+    const v = tk.v || (p && state.explicit.has(p) ? 'Unknown' : null);
+    if (!v) continue;
+    (out[sid] = out[sid] || []).push(v);
   }
   for (const k of Object.keys(out)) out[k] = out[k].join(' · ');
   return out;
@@ -1448,7 +1476,7 @@ function stageStrip(sts, r) {
     const said = owes ? 'required, not answered' : v ? `${v}, answered` : optional ? 'optional' : 'not answered';
     nav.append(h('button', { type: 'button', class: `stg${cur ? ' cur' : ''}${owes ? ' need' : v ? ' done' : ''}`, 'aria-current': cur ? 'step' : null,
       'aria-label': `${i + 1}. ${s.title}: ${said}`, title: v || null, onclick: () => goStage(s.id) },
-      h('span', { class: 'stg-n', 'aria-hidden': 'true' }, v && !owes ? '✓' : String(i + 1)),
+      h('span', { class: 'stg-n', 'aria-hidden': 'true' }, v && !owes ? (v.split(' · ').includes('Unknown') ? '?' : '✓') : String(i + 1)),   // any Unknown on purpose in the stage: a ?, not a tick (Terra 01a1bd00)
       h('span', { class: 'stg-tx', 'aria-hidden': 'true' }, h('span', { class: 'stg-t' }, s.title), h('span', { class: 'stg-v' }, word))));
   });
   return nav;
@@ -1456,10 +1484,21 @@ function stageStrip(sts, r) {
 function stageFoot(sts, cur) {
   const prev = prevStage(sts, cur.id); const next = nextStage(sts, cur.id);
   const title = (id) => sts.find((s) => s.id === id).title;
-  return h('div', { class: 'stage-foot' },
+  // READY TO LABEL (2026-11-08): with every required answer in, the foot before Details stops inviting into the optional form
+  // ("Next: Details" read as one more step) and says what is ready and where the action is; Details stays a step away
+  const isReady = next === 'details' && batching() && ready().ready;
+  const specs = isReady ? previews().map(shortSpec) : [];
+  const spec = specs.length > 3 ? `${specs.slice(0, 3).join(', ')} and ${specs.length - 3} more` : specs.join(', ');
+  const last = MODE !== 'standalone' ? 'That is everything. Add with the button below.'
+    : (batching() && ready().ready) ? 'That is everything. Make the labels with the button below, or add them to the list.'
+    : shownRecords().length ? 'That is everything here; a required answer is still missing (the bar says which). The button below makes labels for your list as it is.'
+    : 'That is everything here; a required answer is still missing (the bar says which).';
+  return h('div', { class: `stage-foot${isReady ? ' ready' : ''}` },
     prev ? h('button', { type: 'button', class: 'btn ghost', onclick: () => goStage(prev) }, `◂ ${title(prev)}`) : h('span'),
-    next ? h('button', { type: 'button', class: 'btn', disabled: !state.chosen || null, title: state.chosen ? null : 'Choose a family first', onclick: () => goStage(next) }, `Next: ${title(next)} ▸`)
-      : h('span', { class: 'muted small' }, 'That is everything. Add with the button below.'));
+    isReady ? h('span', { class: 'foot-ready' }, h('span', { class: 'ready-text' }, readyFootText(MODE, spec, specs.length)),
+        h('button', { type: 'button', class: 'btn ghost', onclick: () => goStage(next) }, 'Optional details ▸'))
+    : next ? h('button', { type: 'button', class: 'btn', disabled: !state.chosen || null, title: state.chosen ? null : 'Choose a family first', onclick: () => goStage(next) }, `Next: ${title(next)} ▸`)
+      : h('span', { class: 'muted small' }, last));
 }
 
 // ------------------------------------------------------------------ part summary + will add
@@ -1544,7 +1583,7 @@ function summaryCard() {
     return summaryTail(card, facts);
   }
   const sugg = (path) => P.suggestions(t).filter((s) => s.path === path).map((s) =>
-    h('button', { type: 'button', class: 'btn sm', title: `${s.tier}${s.hint ? ' - ' + s.hint : ''}`, onclick: () => { state.template = P.acceptSuggestion(T(), path, s.value); afterChange(); } }, `Use ${suggText(s)}`));
+    h('button', { type: 'button', class: 'btn sm', title: `${s.tier}${s.hint ? ' - ' + s.hint : ''}`, onclick: () => { state.template = P.acceptSuggestion(T(), path, s.value); state.given.add(path); afterChange(); } }, `Use ${suggText(s)}`));
   if (t.drive && ['screw', 'setscrew'].includes(t.family)) {
     facts.append(factRow('Drive', t.drive.type, driveLabel(t.drive.type), { pin: 'drive.type' }));
     facts.append(factRow('Tool', t.drive.tool_size, toolText(t), { sugg: sugg('drive.tool_size') }));
@@ -1765,6 +1804,14 @@ function addParts() {
   save(); render(); revealStage();
   sendItems(items, send.map((x) => x.id), { bar: true });
 }
+// the standalone primary (READY TO LABEL, 2026-11-08): the ready batch onto the list, then the Label Studio with the list
+function addThenMake() {
+  const before = state.records.length;
+  addParts();
+  const added = state.records.slice(before);
+  // the parts just added go whatever the collection filter shows: the button counted them (Terra 01a1bcce)
+  if (added.length) makeLabels([...shownRecords().filter((r) => !added.includes(r)), ...added]);
+}
 // Hold, pick more (the embeds; Sol 01a13c2c): both embeds close after an add, so the expert collects several batches first
 function holdBatch() {
   if (!batching() || MODE === 'standalone' || !ready().ready) return;
@@ -1800,10 +1847,10 @@ function removeRecord(r) {
 }
 function editRecord(id) {
   const rec = state.records.find((r) => r.id === id); if (!rec) return;
-  if (!state.saved) state.saved = { template: state.template, family: state.family, sel: state.sel, section: state.section, stage: state.stage, explicit: [...state.explicit], chosen: state.chosen };
+  if (!state.saved) state.saved = { template: state.template, family: state.family, sel: state.sel, section: state.section, stage: state.stage, explicit: [...state.explicit], given: [...state.given], chosen: state.chosen };
   const t = clone(rec); t.id = 'template';
   state.template = t; state.family = rec.family; state.sel = []; state.editing = id; state.chosen = true;
-  state.explicit = new Set(rec.user_unknown || []); state.customOpen = null; state.section = planKey(PLAN[rec.family][0]);
+  state.explicit = new Set(rec.user_unknown || []); state.given = givenPathsOf(t); state.customOpen = null; state.section = planKey(PLAN[rec.family][0]);
   state.stage = nextStage(stages(), 'family') || 'family';
   render(); window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1828,9 +1875,9 @@ function saveEdit() {
 function cancelEdit() { leaveEdit(); }
 function leaveEdit() {
   const s = state.saved; state.saved = null; state.editing = null;
-  state.explicit.clear();
+  state.explicit.clear(); state.given.clear();
   // a first visit that edited an imported row and came back has still not chosen a family (Sol 01a13c5f)
-  if (s) { state.template = s.template; state.family = s.family; state.sel = s.sel; state.section = s.section; state.stage = s.stage; state.explicit = new Set(s.explicit); state.chosen = s.chosen; }
+  if (s) { state.template = s.template; state.family = s.family; state.sel = s.sel; state.section = s.section; state.stage = s.stage; state.explicit = new Set(s.explicit); state.given = new Set(s.given || []); state.chosen = s.chosen; }
   state.customOpen = null;
   save(); render();
 }
@@ -1975,8 +2022,9 @@ function sendItems(items, ids, { bar, edit = false }) {
   render();                 // every send control reads addWait: redraw them all, not only the bar
   setStatus(PLANNER ? `Adding ${n} to your build…` : `Adding ${n} to your list…`);
 }
-function makeLabels() {
-  const recs = shownRecords();
+// recsArg: the records to label, when the caller has already decided (addThenMake); a click's event is not a list
+function makeLabels(recsArg) {
+  const recs = Array.isArray(recsArg) ? recsArg : shownRecords();
   if (!recs.length) return;
   if (recs.length > LABEL_STUDIO_MAX_ITEMS) { setLabelsStatus(`${PLANNER ? 'The planner' : 'The Label Studio'} takes up to ${LABEL_STUDIO_MAX_ITEMS} labels at once; ${recs.length} are shown. Filter to a collection first.`, 'err'); return; }
   const items = recs.map((r) => labelItem(r, { describe: describeFor(r), style: state.labelStyle }));
@@ -2297,7 +2345,7 @@ function findApply(i) {
     state.template = r.template;
     // one typed part is one fresh batch, as after an Add: the ticks are replaced, never added to
     if (batching() && varyPath()) { state.sel = r.sel; state.explicit.delete(varyPath()); }
-    for (const p of r.touched) state.explicit.delete(p);
+    for (const p of r.touched) { state.explicit.delete(p); state.given.add(p); }
     state.customOpen = null; state.offerKept = false;
   } catch (e) { setStatus(`${text}: ${e.message}`, 'err'); return; }
   save();
@@ -2389,6 +2437,15 @@ function render() {
   if (!state.chosen) state.stage = 'family';
   else if (!sts.some((s) => s.id === state.stage)) state.stage = (sts[1] || sts[0]).id;
   const strip = stageStrip(sts, ready());
+  // a phone (css): one line, "Step 2 of 5" with what is answered so far, and Jump to… opening the strip under it; the strip
+  // itself stays for the desktop and for the open state (the design consult's step 2, 2026-11-08)
+  if (state.stripOpen && window.innerWidth > 760) state.stripOpen = false;   // widened to the desktop, where the strip is always shown: the phone's toggle does not come back open (Terra 01a1bd00)
+  { const sv = stageValues(); const ci = Math.max(0, sts.findIndex((s) => s.id === state.stage));
+    const crumbs = sts.filter((s) => s.id !== state.stage && sv[s.id]).map((s) => sv[s.id]);
+    left.append(h('div', { class: 'stage-line' }, h('span', { class: 'sl-step' }, `Step ${ci + 1} of ${sts.length}`),
+      h('span', { class: 'sl-crumbs' }, crumbs.join(' · ')),
+      h('button', { type: 'button', class: 'btn sm ghost', 'aria-expanded': String(!!state.stripOpen), onclick: () => { state.stripOpen = !state.stripOpen; render(); } }, state.stripOpen ? 'Hide stages ▴' : 'Jump to… ▾')));
+    strip.classList.toggle('open', !!state.stripOpen); }
   left.append(strip);
   if (strip.scrollWidth > strip.clientWidth) {     // a phone: the strip scrolls sideways, the current stage kept in view
     const c = strip.querySelector('.stg.cur');
@@ -2401,6 +2458,15 @@ function render() {
   const panel = h('div', { id: 'stage-panel', class: `stage-panel stage-${cur.id}` },
     h('h2', { id: 'stage-h', class: 'stage-h', tabindex: '-1' }, cur.title, h('span', { class: 'hint' }, stageHint(cur))));
   left.append(panel);
+  // the honest answer one tap from the question (the design consult's step 3, 2026-11-08): Not sure keeps the stage's single
+  // choice Unknown and moves on, instead of a dashed tile past the whole grid that left the newcomer standing
+  if (batching() && (cur.id === 'type' || cur.id === 'size')) {
+    const nsKey = cur.keys.find((k) => { const e = planEntries(t.family).find((x) => x.key === k); return e && !e.multi && sectionPath(k); });
+    const nsPath = nsKey ? sectionPath(nsKey) : null;
+    if (nsPath && !(getPath(T(), nsPath).status === UNKNOWN && state.explicit.has(nsPath))) panel.append(h('p', { class: 'notsure' },
+      h('button', { type: 'button', class: 'linkish', onclick: () => apply(nsKey, nsPath, { mode: UNKNOWN }) }, 'Not sure? Keep it unknown and carry on ▸'),
+      ' ', cur.id === 'size' ? 'The label waits for the size.' : (t.family === 'screw' && nsKey === 'head' ? 'Without the head type there is no list of lengths; type yours.' : '')));
+  }
   if (cur.id === 'family') panel.append(h('section', { id: 'sec-family', class: 'sec', 'aria-label': 'Family' }, familyTiles()));
   const n = null;           // the strip numbers the stages; the sections inside one carry their titles only
   for (const entry of PLAN[t.family]) {
@@ -2474,7 +2540,10 @@ function renderBar() {
   const total = (r.ready ? n : 0) + held.length;
   // one send at a time, and nothing posted before the planner has connected; Save on its own page only saves, so it always may
   // more than 200 at once is refused by both destinations: the bar says so rather than looking ready (the stress test)
-  const over = !editing && MODE !== 'standalone' && total > LABEL_STUDIO_MAX_ITEMS;
+  // on its own page the primary labels the ready batch AND the list shown (READY TO LABEL): that sum is what the 200 limit
+  // applies to, and it is checked here, before anything is added, not by makeLabels after (Terra 01a1bcce)
+  const standaloneMake = MODE === 'standalone' && !editing ? (r.ready ? n : 0) + shownRecords().length : 0;
+  const over = !editing && (MODE === 'standalone' ? standaloneMake > LABEL_STUDIO_MAX_ITEMS : total > LABEL_STUDIO_MAX_ITEMS);
   const can = editing ? MODE === 'standalone' || (!connecting && !addWait) : total > 0 && !connecting && !addWait && !over;
   // the focus, before the slots are redrawn: a button that had it gets it back (the code review: a status change dropped it)
   const had = bar.contains(document.activeElement) ? document.activeElement : null;
@@ -2490,16 +2559,30 @@ function renderBar() {
   // blurred a field (whose change re-rendered the bar) landed on a dead button (the stress test: Other part's first Add
   // after typing a name was lost), and a focused Add lost its focus
   const primary = $('add-parts');
-  primary.textContent = primaryText({ mode: MODE, n, held: held.length, editing, retry });
-  primary.disabled = !can;
-  primary.onclick = editing ? saveEdit : addParts;
   const more = [];
+  if (MODE === 'standalone' && !editing) {
+    // READY TO LABEL (2026-11-08, flow.js makeLabelsText): the primary makes the labels, putting a ready batch on the list on
+    // the way; with a list and nothing ready it is Make labels alone (what the secondary button used to be); with nothing
+    // at all it waits. Add to the list is the secondary: collect now, label later
+    const listN = shownRecords().length, newN = r.ready ? n : 0, makeN = newN + listN;
+    primary.textContent = makeLabelsText(makeN);
+    primary.disabled = !makeN || over;
+    primary.onclick = newN ? addThenMake : makeLabels;
+    primary.title = newN ? `Put ${newN === 1 ? 'this part' : `these ${newN} parts`} on your list and open the Label Studio with ${listN ? `all ${makeN}` : newN === 1 ? 'its label' : 'their labels'}`
+      : listN ? 'Open the Label Studio with a part label for every part shown here (the collection filter applies): preview them, export a 3MF, or add them to a planner build.' : '';
+    more.push(h('button', { type: 'button', class: 'btn', 'data-k': 'add-list', disabled: !newN || null, onclick: addParts,
+      title: 'Put these on your list and keep picking; Make labels later takes the whole list' }, primaryText({ mode: MODE, n, held: 0 })));
+  } else {
+    primary.textContent = primaryText({ mode: MODE, n, held: held.length, editing, retry });
+    primary.disabled = !can;
+    primary.onclick = editing ? saveEdit : addParts;
+    primary.title = '';
+  }
   if (editing) more.push(h('button', { type: 'button', class: 'btn ghost', 'data-k': 'cancel-edit', onclick: cancelEdit }, 'Cancel'));
   else if (MODE !== 'standalone' && r.ready && !retry && !(state.retry && held.length) && !connecting && !addWait && total < LABEL_STUDIO_MAX_ITEMS) {
     more.push(h('button', { type: 'button', class: 'btn ghost hold', 'data-k': 'hold', onclick: holdBatch,
       title: 'Keep these parts pending and pick another size or type: your next Add sends them all at once' }, HOLD_TEXT));
   }
-  if (MODE === 'standalone' && !editing) more.push(labelsButton({ inBar: true, prominent: !can && shownRecords().length > 0 }));
   act.querySelector('.bar-held').replaceChildren(...kids);
   act.querySelector('.bar-more').replaceChildren(...more);
   if (key && key !== 'add-parts') { const again = act.querySelector(`#${CSS.escape(key)}, [data-k="${CSS.escape(key)}"]`); if (again && !again.disabled) again.focus({ preventScroll: true }); }
@@ -2511,7 +2594,9 @@ function renderBar() {
       h('button', { type: 'button', class: 'linkish', 'data-k': 'bar-action', onclick: () => { barMsg = null; clearTimeout(barTimer); a.run(); } }, a.label));
   } else if (barMsg) setLine(`msg:${barMsg.cls}:${barMsg.text}`, barMsg.cls, barMsg.text);
   else if (connecting) setLine('connecting', '', 'Connecting to the planner…');
-  else if (over) setLine(`over:${total}`, 'err', `${total} parts is more than the ${LABEL_STUDIO_MAX_ITEMS} that go at once: untick some, or clear the pending ones (×) and add them in two goes.`);
+  else if (over) setLine(`over:${MODE === 'standalone' ? standaloneMake : total}`, 'err', MODE === 'standalone'
+    ? `${standaloneMake} labels is more than the ${LABEL_STUDIO_MAX_ITEMS} the Label Studio takes at once: filter the list to a collection, or remove some parts first.`
+    : `${total} parts is more than the ${LABEL_STUDIO_MAX_ITEMS} that go at once: untick some, or clear the pending ones (×) and add them in two goes.`);
   else if (!editing && !r.ready && r.missing.length) {
     const lead = held.length ? `${heldText(held.length)}. To add this one too: ` : '';
     const kidsLine = lead ? [lead] : [];
